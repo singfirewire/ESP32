@@ -1,0 +1,270 @@
+#include <WiFi.h>
+#include <HTTPClient.h>
+
+// WiFi credentials
+const char* ssid = "101-IOT";
+const char* password = "10101010";
+
+// Pin definitions
+const int LED_WIFI_PIN = 2;      // LED แสดงสถานะ WiFi
+const int LED_WARNING_PIN = 17;   // LED เตือนเวลา
+const int SWITCH1_PIN = 22;      // สวิตช์ตัวที่ 1
+const int SWITCH2_PIN = 23;      // สวิตช์ตัวที่ 2
+const int RELAY1_PIN = 16;       // รีเลย์ตัวที่ 1
+const int RELAY2_PIN = 19;       // รีเลย์ตัวที่ 2
+
+// Timing configurations
+const long FAST_BLINK = 200;              // Fast blink interval (ms)
+const long SLOW_BLINK = 3000;             // Slow blink interval (ms)
+const long CHECK_INTERVAL = 10000;        // Status check interval (ms)
+const long COUNTDOWN_TIME = 40 * 60 * 1000; // 40 นาที
+const long WARNING_TIME = 3 * 60 * 1000;    // 3 นาทีสุดท้าย
+const long URGENT_TIME = 30 * 1000;         // 30 วินาทีสุดท้าย
+const long WARNING_BLINK = 1000;            // กะพริบทุก 1 วินาที
+const long URGENT_BLINK = 200;              // กะพริบเร็วทุก 0.2 วินาที
+const long DEBOUNCE_DELAY = 50;            // ดีเลย์ป้องกันการกระเด้ง
+
+// Variables for WiFi status
+unsigned long previousMillis = 0;
+bool ledState = LOW;
+int connectionStatus = 0;
+
+// Variables for relay control
+unsigned long relay1StartTime = 0;
+unsigned long relay2StartTime = 0;
+bool relay1Active = false;
+bool relay2Active = false;
+
+// Variables for switch control
+bool switch1LastState = HIGH;
+bool switch2LastState = HIGH;
+unsigned long lastDebounceTime1 = 0;
+unsigned long lastDebounceTime2 = 0;
+
+// Function to check internet connectivity
+bool checkInternet() {
+    HTTPClient http;
+    http.begin("http://www.google.com");
+    int httpCode = http.GET();
+    http.end();
+    return httpCode > 0;
+}
+
+void handleRelay1(bool switchPressed) {
+    if (switchPressed) {
+        if (!relay1Active) {  // ถ้ารีเลย์ปิดอยู่
+            relay1Active = true;
+            relay1StartTime = millis();
+            digitalWrite(RELAY1_PIN, HIGH);
+            Serial.println("Relay 1 activated - Timer started (40 minutes)");
+        } else if (relay1Active && ((millis() - relay1StartTime) >= (COUNTDOWN_TIME - WARNING_TIME))) {
+            // รีเซ็ตเวลาถ้าอยู่ในช่วง 3 นาทีสุดท้าย
+            relay1StartTime = millis();
+            Serial.println("Relay 1 timer reset - New 40 minutes countdown started");
+        }
+        Serial.print("Relay 1 state: ");
+        Serial.println(digitalRead(RELAY1_PIN) ? "ON" : "OFF");
+    }
+}
+
+void handleRelay2(bool switchPressed) {
+    if (switchPressed) {
+        if (!relay2Active) {  // ถ้ารีเลย์ปิดอยู่
+            relay2Active = true;
+            relay2StartTime = millis();
+            digitalWrite(RELAY2_PIN, HIGH);
+            Serial.println("Relay 2 activated - Timer started (40 minutes)");
+        } else if (relay2Active && ((millis() - relay2StartTime) >= (COUNTDOWN_TIME - WARNING_TIME))) {
+            // รีเซ็ตเวลาถ้าอยู่ในช่วง 3 นาทีสุดท้าย
+            relay2StartTime = millis();
+            Serial.println("Relay 2 timer reset - New 40 minutes countdown started");
+        }
+        Serial.print("Relay 2 state: ");
+        Serial.println(digitalRead(RELAY2_PIN) ? "ON" : "OFF");
+    }
+}
+
+void controlWarningLED(unsigned long remainingTime) {
+    if (remainingTime <= WARNING_TIME) {  // อยู่ในช่วง 3 นาทีสุดท้าย
+        if (remainingTime <= URGENT_TIME) {  // อยู่ในช่วง 30 วินาทีสุดท้าย
+            if ((millis() % URGENT_BLINK) < (URGENT_BLINK/2)) {
+                digitalWrite(LED_WARNING_PIN, HIGH);
+            } else {
+                digitalWrite(LED_WARNING_PIN, LOW);
+            }
+        } else {
+            if ((millis() % WARNING_BLINK) < (WARNING_BLINK/2)) {
+                digitalWrite(LED_WARNING_PIN, HIGH);
+            } else {
+                digitalWrite(LED_WARNING_PIN, LOW);
+            }
+        }
+    } else {
+        digitalWrite(LED_WARNING_PIN, LOW);
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+    delay(1000);  // รอให้ Serial พร้อม
+    Serial.println("Starting setup...");
+    
+    // Initialize pins
+    pinMode(LED_WIFI_PIN, OUTPUT);
+    pinMode(LED_WARNING_PIN, OUTPUT);
+    pinMode(RELAY1_PIN, OUTPUT);
+    pinMode(RELAY2_PIN, OUTPUT);
+    pinMode(SWITCH1_PIN, INPUT_PULLUP);
+    pinMode(SWITCH2_PIN, INPUT_PULLUP);
+    
+    // Set initial states
+    digitalWrite(RELAY1_PIN, LOW);
+    digitalWrite(RELAY2_PIN, LOW);
+    digitalWrite(LED_WARNING_PIN, LOW);
+    
+    WiFi.begin(ssid, password);
+    Serial.println("Setup complete.");
+}
+
+void loop() {
+    unsigned long currentMillis = millis();
+    
+    // Read switches with debounce
+    bool switch1Reading = digitalRead(SWITCH1_PIN);
+    bool switch2Reading = digitalRead(SWITCH2_PIN);
+    
+    // Switch 1 debounce and handling
+    if (switch1Reading != switch1LastState) {
+        lastDebounceTime1 = currentMillis;
+    }
+    if ((currentMillis - lastDebounceTime1) > DEBOUNCE_DELAY) {
+        if (switch1Reading == LOW) {  // Switch is pressed (LOW because of INPUT_PULLUP)
+            Serial.println("Switch 1 pressed");
+            handleRelay1(true);
+        }
+    }
+    switch1LastState = switch1Reading;
+    
+    // Switch 2 debounce and handling
+    if (switch2Reading != switch2LastState) {
+        lastDebounceTime2 = currentMillis;
+    }
+    if ((currentMillis - lastDebounceTime2) > DEBOUNCE_DELAY) {
+        if (switch2Reading == LOW) {  // Switch is pressed (LOW because of INPUT_PULLUP)
+            Serial.println("Switch 2 pressed");
+            handleRelay2(true);
+        }
+    }
+    switch2LastState = switch2Reading;
+    
+    // Check and update relay 1 status
+    if (relay1Active) {
+        unsigned long relay1Elapsed = currentMillis - relay1StartTime;
+        if (relay1Elapsed >= COUNTDOWN_TIME) {
+            relay1Active = false;
+            digitalWrite(RELAY1_PIN, LOW);
+            Serial.println("Relay 1 timer completed - turned OFF");
+        } else {
+            controlWarningLED(COUNTDOWN_TIME - relay1Elapsed);
+        }
+    }
+    
+    // Check and update relay 2 status
+    if (relay2Active) {
+        unsigned long relay2Elapsed = currentMillis - relay2StartTime;
+        if (relay2Elapsed >= COUNTDOWN_TIME) {
+            relay2Active = false;
+            digitalWrite(RELAY2_PIN, LOW);
+            Serial.println("Relay 2 timer completed - turned OFF");
+        } else {
+            controlWarningLED(COUNTDOWN_TIME - relay2Elapsed);
+        }
+    }
+    
+    // Status update every CHECK_INTERVAL
+    if (currentMillis - previousMillis >= CHECK_INTERVAL) {
+        previousMillis = currentMillis;
+        
+        // Check WiFi and Internet status
+        if (WiFi.status() != WL_CONNECTED) {
+            connectionStatus = 0;  // No WiFi
+        } else {
+            if (checkInternet()) {
+                connectionStatus = 2;  // WiFi + Internet
+            } else {
+                connectionStatus = 3;  // WiFi but no Internet
+            }
+        }
+
+        // Print status report
+        Serial.println("\n=== Status Report ===");
+        Serial.print("Time: ");
+        Serial.print(currentMillis / 1000);
+        Serial.println(" seconds");
+        
+        if (WiFi.status() == WL_CONNECTED) {
+            Serial.println("WiFi: Connected");
+            Serial.print("IP Address: ");
+            Serial.println(WiFi.localIP());
+            Serial.print("Signal Strength (RSSI): ");
+            Serial.print(WiFi.RSSI());
+            Serial.println(" dBm");
+            
+            if (connectionStatus == 2) {
+                Serial.println("Internet: Connected");
+            } else if (connectionStatus == 3) {
+                Serial.println("Internet: Not Connected");
+            }
+        } else {
+            Serial.println("WiFi: Not Connected");
+        }
+
+        // Print relay status
+        if (relay1Active) {
+            unsigned long remaining = (relay1StartTime + COUNTDOWN_TIME - currentMillis) / 1000;
+            Serial.print("Relay 1: ON, Time remaining: ");
+            Serial.print(remaining / 60);
+            Serial.print(":");
+            Serial.println(remaining % 60);
+        } else {
+            Serial.println("Relay 1: OFF");
+        }
+        if (relay2Active) {
+            unsigned long remaining = (relay2StartTime + COUNTDOWN_TIME - currentMillis) / 1000;
+            Serial.print("Relay 2: ON, Time remaining: ");
+            Serial.print(remaining / 60);
+            Serial.print(":");
+            Serial.println(remaining % 60);
+        } else {
+            Serial.println("Relay 2: OFF");
+        }
+        Serial.println("===================");
+    }
+
+    // Control WiFi status LED
+    switch (connectionStatus) {
+        case 0:  // No WiFi - Fast blink
+            if ((currentMillis % FAST_BLINK) < (FAST_BLINK/2)) {
+                digitalWrite(LED_WIFI_PIN, HIGH);
+            } else {
+                digitalWrite(LED_WIFI_PIN, LOW);
+            }
+            break;
+        
+        case 1:  // WiFi connected - LED off
+            digitalWrite(LED_WIFI_PIN, LOW);
+            break;
+        
+        case 2:  // WiFi + Internet - Slow blink
+            if ((currentMillis % SLOW_BLINK) < (SLOW_BLINK/2)) {
+                digitalWrite(LED_WIFI_PIN, HIGH);
+            } else {
+                digitalWrite(LED_WIFI_PIN, LOW);
+            }
+            break;
+        
+        case 3:  // WiFi but no Internet - LED on
+            digitalWrite(LED_WIFI_PIN, HIGH);
+            break;
+    }
+}
